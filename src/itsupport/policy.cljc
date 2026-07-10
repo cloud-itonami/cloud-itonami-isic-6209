@@ -1,0 +1,152 @@
+(ns itsupport.policy
+  "TicketGovernor — the independent compliance layer that earns the
+  TicketRouter-LLM the right to route a ticket, disclose status, or resolve
+  a dispute. The LLM has no notion of least-privilege access-tier rules,
+  incident-response certification requirements, SLA urgency, or a
+  subscriber's disclosure entitlement, so this MUST be a separate system
+  able to *reject* a proposal and fall back to HOLD.
+
+  Eight checks, in priority order. The first five are HARD violations: a
+  human approver CANNOT override them. The last three are SOFT/always-
+  escalate: they route to a human, who may approve.
+
+    1. rbac                          — does actor-role have permission?
+    2. access-tier-clearance-gate    — technician's access-tier must meet
+                                        or exceed the ticket's required
+                                        tier (this actor's domain-unique
+                                        analog of a fat-finger/tolerance
+                                        gate — routing an elevated/
+                                        privileged ticket to an
+                                        under-cleared technician is a real
+                                        least-privilege violation).
+    3. security-incident-misrouting-gate — a `:category :security-incident`
+                                        ticket can only route to a
+                                        technician holding a real named
+                                        incident-response certification.
+    4. source-provenance-gate        — ticket/assignment source class must
+                                        be in the R0 catalog.
+    5. licensed-disclosure           — active subscriber contract, columns
+                                        within tier.
+    6. confidence floor              — low confidence → escalate.
+    7. sla-breach-imminent gate      — ticket close to SLA breach → always
+                                        escalate, regardless of confidence.
+    8. dispute-request               — never auto-resolves, any phase."
+  (:require [clojure.set :as set]
+            [itsupport.facts :as facts]
+            [itsupport.store :as store]))
+
+;; ───────────────────────── policy tables ─────────────────────────
+
+(def sla-breach-threshold-minutes
+  "A ticket with less than this many minutes to SLA breach always escalates
+  to a human, regardless of confidence — this actor's analog of a
+  halted-instrument/high-stakes gate."
+  60)
+
+(def confidence-floor 0.6)
+
+(def permissions
+  {:dispatcher       #{:ticket/route}
+   :support-manager  #{:ticket/route :dispute/request}
+   :subscriber       #{:disclosure/query}})
+
+(def tier-columns
+  (let [base #{:id :client :category :required-access-tier :sla-remaining-minutes}
+        pro-extra #{:assigned-technician}
+        inst-extra #{:raw-source}]
+    {:tier/basic         base
+     :tier/pro           (into base pro-extra)
+     :tier/institutional (into base (into pro-extra inst-extra))}))
+
+;; ───────────────────────── checks ─────────────────────────
+
+(defn- rbac-violations [{:keys [op]} {:keys [actor-role]}]
+  (when-not (contains? (get permissions actor-role #{}) op)
+    [{:rule :rbac :detail (str actor-role " は " op " の権限を持たない")}]))
+
+(defn- access-tier-violations
+  [{:keys [op]} proposal st]
+  (when (= op :ticket/route)
+    (let [{:keys [ticket-id technician-id]} (:value proposal)
+          tk   (store/ticket st ticket-id)
+          tech (store/technician st technician-id)]
+      (when (and tk tech
+                 (not (facts/tier-at-least? (:access-tier tech) (:required-access-tier tk))))
+        [{:rule :access-tier-clearance-gate
+          :detail (str "technician tier " (:access-tier tech) " は ticket 要求 tier "
+                       (:required-access-tier tk) " に未達")}]))))
+
+(defn- security-incident-violations
+  [{:keys [op]} proposal st]
+  (when (= op :ticket/route)
+    (let [{:keys [ticket-id technician-id]} (:value proposal)
+          tk   (store/ticket st ticket-id)
+          tech (store/technician st technician-id)]
+      (when (and tk (= :security-incident (:category tk))
+                 (not (some facts/security-cert-allowed? (:certifications tech))))
+        [{:rule :security-incident-misrouting-gate
+          :detail (str "security-incident ticket に対し実在のインシデント対応認定を"
+                       "保持しない technician: " technician-id)}]))))
+
+(defn- source-provenance-violations
+  [{:keys [op]} proposal]
+  (when (= op :ticket/route)
+    (let [src (:source proposal)]
+      (when (or (nil? src) (not (facts/class-allowed? (:class src))))
+        [{:rule :source-provenance-gate
+          :detail (str "出典が無いか許可された出典クラスでない: " (pr-str src))}]))))
+
+(defn- licensed-disclosure-violations
+  [{:keys [op]} {:keys [tenant]} proposal st]
+  (when (= op :disclosure/query)
+    (let [c (when tenant (store/contract st tenant))]
+      (if (or (nil? c) (not (:active? c)))
+        [{:rule :licensed-disclosure :detail (str "有効な契約が無い: tenant=" tenant)}]
+        (let [allowed (get tier-columns (:tier c) #{})
+              cols    (set (:columns proposal))
+              extra   (set/difference cols allowed)]
+          (when (seq extra)
+            [{:rule :licensed-disclosure
+              :detail (str "契約 tier " (:tier c) " に対し過剰な列: " (vec extra))}]))))))
+
+(defn- sla-breach-imminent?
+  [st {:keys [op]} proposal]
+  (when (= op :ticket/route)
+    (let [tk (store/ticket st (get-in proposal [:value :ticket-id]))]
+      (boolean (and tk (:sla-remaining-minutes tk)
+                    (< (:sla-remaining-minutes tk) sla-breach-threshold-minutes))))))
+
+(defn check
+  "Censors a TicketRouter-LLM proposal against the policy tables. Returns
+   {:ok? bool :violations [..] :confidence c :escalate? bool
+    :sla-breach-imminent? bool :hard? bool :correction? bool}."
+  [request context proposal st]
+  (let [hard    (into []
+                      (concat (rbac-violations request context)
+                              (access-tier-violations request proposal st)
+                              (security-incident-violations request proposal st)
+                              (source-provenance-violations request proposal)
+                              (licensed-disclosure-violations request context proposal st)))
+        conf         (:confidence proposal 0.0)
+        low?         (< conf confidence-floor)
+        sla-urgent?  (sla-breach-imminent? st request proposal)
+        correction?  (= :dispute/request (:op request))
+        hard?        (boolean (seq hard))]
+    {:ok?                  (and (not hard?) (not low?) (not sla-urgent?) (not correction?))
+     :violations           hard
+     :confidence           conf
+     :hard?                hard?
+     :escalate?            (and (not hard?) (or low? sla-urgent? correction?))
+     :sla-breach-imminent? sla-urgent?
+     :correction?          correction?}))
+
+(defn hold-fact
+  [request context verdict]
+  {:t          :policy-hold
+   :op         (:op request)
+   :actor      (:actor-id context)
+   :subject    (:subject request)
+   :disposition :hold
+   :basis      (mapv :rule (:violations verdict))
+   :violations (:violations verdict)
+   :confidence (:confidence verdict)})

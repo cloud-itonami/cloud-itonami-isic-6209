@@ -1,0 +1,105 @@
+(ns itsupport.sim
+  "Demo runner: push eight representative operations through one
+  OperationActor and watch the TicketGovernor + approval workflow earn the
+  TicketRouter-LLM the right to route, disclose or resolve a dispute.
+
+    op1  一般チケットを適格な standard-tier technician へルーティング       → commit
+    op2  出典なしルーティング(フィード欠落)                              → source-provenance REJECT → hold
+    op3  elevated-access チケットを standard-tier technician へ(未達)     → access-tier-clearance REJECT → hold
+    op4  security-incident チケットを認定なし technician へ              → security-incident-misrouting REJECT → hold
+    op5  開示クエリが tier/basic 契約なのに assigned-technician/raw-source を要求 → hold
+    op5a 開示クエリが未契約 tenant から                                  → hold
+    op6  SLA 逼迫チケットの適格ルーティング(出典・tier・認定は正常でも人間承認) → escalate → approve → commit
+    op7  assignment への異議申立て(どの phase でも常に人間レビュー)      → escalate → approve → commit
+
+  Run: clojure -M:dev:run"
+  (:require [langgraph.graph :as g]
+            [itsupport.store :as store]
+            [itsupport.operation :as op]
+            [itsupport.facts :as facts]
+            [itsupport.report :as report]))
+
+(defn- line [& xs] (println (apply str xs)))
+
+(defn- run-op!
+  [actor thread-id request context approve?]
+  (let [res (g/run* actor {:request request :context context} {:thread-id thread-id})]
+    (if (= :interrupted (:status res))
+      (do (line "   ⏸  人間レビュー待ち (reason: "
+                (-> res :state :audit last :reason) ")")
+          (let [res2 (g/run* actor
+                             {:approval {:status (if approve? :approved :rejected)
+                                         :by "manager-1"}}
+                             {:thread-id thread-id :resume? true})]
+            (line "   ▶  " (if approve? "承認 → " "却下 → ") "disposition = "
+                  (get-in res2 [:state :disposition]))
+            res2))
+      (do (line "   → disposition = " (get-in res [:state :disposition])
+                "  (confidence " (get-in res [:state :verdict :confidence]) ")")
+          res))))
+
+(defn -main [& _]
+  (let [db    (store/seed-db)
+        actor (op/build db)
+        dispatcher {:actor-id "dp-1" :actor-role :dispatcher :phase 3}
+        manager    {:actor-id "mg-1" :actor-role :support-manager :phase 3}]
+
+    (line "── R0 カバレッジ(正直な現状) ──")
+    (line (pr-str (facts/coverage)))
+
+    (line "\n── OperationActor (TicketRouter-LLM sealed; TicketGovernor active) ──")
+
+    (line "\nop1  一般チケットを適格な standard-tier technician へルーティング")
+    (run-op! actor "op1"
+             {:op :ticket/route :subject "tk-100" :ticket-id "tk-100" :technician-id "tech-100"
+              :hours 1.5 :source {:class :client-submitted-ticket :ref "portal:tk-100"}}
+             dispatcher true)
+
+    (line "\nop2  出典なしルーティング(フィード欠落)")
+    (run-op! actor "op2"
+             {:op :ticket/route :subject "tk-100" :ticket-id "tk-100" :technician-id "tech-100"
+              :hours 1.0 :source {:class :client-submitted-ticket :ref "portal:tk-100"}
+              :unsourced? true}
+             dispatcher true)
+
+    (line "\nop3  elevated-access チケットを standard-tier technician へ(未達)")
+    (run-op! actor "op3"
+             {:op :ticket/route :subject "tk-200" :ticket-id "tk-200" :technician-id "tech-100"
+              :hours 2.0 :source {:class :monitoring-system-alert :ref "alert:tk-200"}}
+             dispatcher true)
+
+    (line "\nop4  security-incident チケットを実在の認定を持たない technician へ")
+    (run-op! actor "op4"
+             {:op :ticket/route :subject "tk-300" :ticket-id "tk-300" :technician-id "tech-250"
+              :hours 3.0 :source {:class :monitoring-system-alert :ref "alert:tk-300"}}
+             dispatcher true)
+
+    (line "\nop5  開示クエリ(tier/basic 契約なのに assigned-technician/raw-source まで要求)")
+    (run-op! actor "op5"
+             {:op :disclosure/query :subject "tk-100" :ticket-id "tk-100" :greedy? true}
+             {:actor-id "sub-1" :actor-role :subscriber :tenant "tenant-basic"} true)
+
+    (line "\nop5a 開示クエリ(登録されていない tenant から)")
+    (run-op! actor "op5a"
+             {:op :disclosure/query :subject "tk-100" :ticket-id "tk-100"}
+             {:actor-id "sub-2" :actor-role :subscriber :tenant "tenant-ghost"} true)
+
+    (line "\nop6  SLA 逼迫チケットの適格ルーティング(出典・tier・認定は正常でも人間承認)")
+    (run-op! actor "op6"
+             {:op :ticket/route :subject "tk-300" :ticket-id "tk-300" :technician-id "tech-300"
+              :hours 2.0 :source {:class :monitoring-system-alert :ref "alert:tk-300"}}
+             dispatcher true)
+
+    (line "\nop7  assignment への異議申立て(どの phase でも常に人間レビュー)")
+    (run-op! actor "op7"
+             {:op :dispute/request :subject "tk-100" :disputed-field :hours :claim 3.0}
+             manager true)
+
+    (line "\n── 開示(governor が承認した tier/basic 列のみ) ──")
+    (line (pr-str (report/render-ticket db "tk-100" [:id :client :category :required-access-tier :sla-remaining-minutes])))
+
+    (line "\n── 監査台帳 (append-only; 誰が・何を・どの契約/出典でルーティング/開示したか) ──")
+    (doseq [f (store/ledger db)]
+      (line "  " (store/ledger-line f)))
+
+    (line "\ndone.")))

@@ -1,0 +1,28 @@
+(ns itsupport.facts-test
+  (:require [clojure.test :refer [deftest is]]
+            [itsupport.facts :as facts]))
+
+(deftest class-allowed?-rejects-unlisted-classes
+  (is (facts/class-allowed? :client-submitted-ticket))
+  (is (facts/class-allowed? :monitoring-system-alert))
+  (is (facts/class-allowed? :hr-verified-certification))
+  (is (not (facts/class-allowed? :inference)))
+  (is (not (facts/class-allowed? nil))))
+
+(deftest security-cert-allowed?-rejects-unlisted-certs
+  (is (facts/security-cert-allowed? :giac-gcih))
+  (is (facts/security-cert-allowed? :cissp))
+  (is (facts/security-cert-allowed? :chfi))
+  (is (not (facts/security-cert-allowed? :comptia-a+))))
+
+(deftest tier-at-least?-orders-correctly
+  (is (facts/tier-at-least? :tier/privileged :tier/standard))
+  (is (facts/tier-at-least? :tier/elevated :tier/elevated))
+  (is (not (facts/tier-at-least? :tier/standard :tier/elevated)))
+  (is (not (facts/tier-at-least? :tier/elevated :tier/privileged))))
+
+(deftest coverage-is-honest-not-aspirational
+  (let [c (facts/coverage)]
+    (is (= 3 (count (:source-classes c))) "3 provenance classes")
+    (is (= 3 (:security-incident-cert-count c)))
+    (is (= 3 (:access-tier-count c)))))

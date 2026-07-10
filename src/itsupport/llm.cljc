@@ -1,0 +1,138 @@
+(ns itsupport.llm
+  "TicketRouter-LLM client — the *contained intelligence node*.
+
+  It normalizes an incoming client ticket into a routing proposal (which
+  technician, how many estimated hours), drafts subscriber disclosure
+  column sets, and drafts dispute resolutions. CRITICAL: it is a
+  smart-but-untrusted advisor. It returns a *proposal*, never a committed
+  assignment or disclosure. Every output is censored downstream by
+  `itsupport.policy` (the TicketGovernor) before anything touches the SSoT
+  or leaves the actor.
+
+  Deterministic mock so the actor graph runs offline and the governor
+  contract is exercised end-to-end. In production this calls a real LLM
+  (kotoba-llm) with the same proposal shape.
+
+  Proposal shape (all kinds):
+    {:summary    str
+     :rationale  str
+     :cites      [kw|str ..]
+     :source     {:class kw :ref str}|nil
+     :effect     kw
+     :value      map|nil
+     :columns    [kw ..]|nil
+     :confidence 0..1}"
+  (:require #?(:clj  [clojure.edn :as edn]
+               :cljs [cljs.reader :as edn])
+            [clojure.string :as str]
+            [langchain.model :as model]
+            [itsupport.store :as store]))
+
+(defn- propose-route
+  "Ticket-routing proposal — the LLM only normalizes/validates the
+  assignment (adds no new technician-qualification facts). `:unsourced?`
+  injects the failure mode we must defend against: a ticket routed with no
+  provenance at all."
+  [_db {:keys [ticket-id technician-id hours source unsourced?]}]
+  (let [src (when-not unsourced? source)]
+    {:summary   (str "ticket route: " ticket-id " → " technician-id " (" hours "h)")
+     :rationale "出典引用済みticket/technicianデータの正規化のみ。新規資格判定なし。"
+     :cites     [:ticket-id :technician-id :hours]
+     :source    src
+     :effect    :assignment-upsert
+     :value     {:ticket-id ticket-id :technician-id technician-id :hours hours :source src}
+     :confidence (if unsourced? 0.9 0.95)}))
+
+(defn- propose-disclosure
+  "Disclosure column-set proposal for a licensed subscriber query.
+  `:greedy?` injects over-disclosure beyond a basic-tier contract."
+  [_db {:keys [ticket-id greedy?]}]
+  (let [base [:id :client :category :required-access-tier :sla-remaining-minutes]
+        greedy-extra [:assigned-technician :raw-source]]
+    {:summary   (str "開示列提案: " ticket-id)
+     :rationale (if greedy? "分析に有用そうな列を広めに含めた。" "契約 tier に必要な最小列のみ。")
+     :cites     base
+     :source    nil
+     :effect    :disclosure-serve
+     :columns   (if greedy? (into base greedy-extra) base)
+     :confidence 0.9}))
+
+(defn- propose-dispute
+  "Dispute/reassignment draft. NEVER auto-applies — `itsupport.policy` and
+  `itsupport.phase` both structurally force every `:dispute/request` to
+  human review."
+  [_db {:keys [disputed-field claim]}]
+  {:summary   (str "assignment の " disputed-field " について異議申立てへの解決案ドラフト")
+   :rationale (str "申立て内容: " claim "。裏取りは人間レビューで行う。")
+   :cites     [disputed-field]
+   :source    nil
+   :effect    :correction-apply
+   :value     {:patch {disputed-field claim}}
+   :confidence 0.5})
+
+(defn infer
+  [db {:keys [op] :as request}]
+  (case op
+    :ticket/route        (propose-route db request)
+    :disclosure/query    (propose-disclosure db request)
+    :dispute/request      (propose-dispute db request)
+    {:summary "未対応の操作" :rationale (str op) :cites [] :source nil
+     :effect :noop :confidence 0.0}))
+
+;; ───────────────────────── Advisor protocol ─────────────────────────
+
+(defprotocol Advisor
+  (-advise [advisor store request] "store + request → proposal map"))
+
+(defn mock-advisor
+  [] (reify Advisor (-advise [_ st req] (infer st req))))
+
+(def ^:private system-prompt
+  (str "あなたはITヘルプデスク/マネージドサービスのチケットルーティング"
+       "アドバイザーです。与えられた事実のみに基づき、提案を1つだけ "
+       "EDN マップで返します。説明や前置きは一切書かず、EDN だけを出力します。\n"
+       "キー: :summary :rationale :cites :source({:class .. :ref ..}か nil) "
+       ":effect(:assignment-upsert|:disclosure-serve|:correction-apply) "
+       ":value :confidence(0..1)。\n"
+       "重要: technician の access-tier/資格認定の妥当性判断や、"
+       "SLA 逼迫時のエスカレーション可否はあなたの責務ではありません"
+       "(governor が判定します)。"))
+
+(defn- facts-for [st {:keys [op subject ticket-id]}]
+  (case op
+    :disclosure/query {:ticket (store/ticket st (or ticket-id subject))}
+    {:ticket (store/ticket st (or ticket-id subject))}))
+
+(defn- parse-proposal
+  [content]
+  (let [p (try (edn/read-string (str/trim (str content)))
+               (catch #?(:clj Exception :cljs :default) _ nil))]
+    (if (map? p)
+      (-> p
+          (update :cites #(vec (or % [])))
+          (update :confidence #(if (number? %) (double %) 0.0))
+          (update :effect #(or % :noop)))
+      {:summary "LLM応答を解釈できませんでした" :rationale (str content)
+       :cites [] :source nil :effect :noop :confidence 0.0})))
+
+(defn llm-advisor
+  ([chat-model] (llm-advisor chat-model {}))
+  ([chat-model gen-opts]
+   (reify Advisor
+     (-advise [_ st req]
+       (let [msgs [{:role :system :content system-prompt}
+                   {:role :user :content (str "操作: " (:op req)
+                                              "\n対象: " (:subject req)
+                                              "\n事実: " (pr-str (facts-for st req)))}]
+             resp (model/-generate chat-model msgs gen-opts)]
+         (parse-proposal (:content resp)))))))
+
+(defn trace [request proposal]
+  {:t          :itsupportllm-proposal
+   :op         (:op request)
+   :subject    (:subject request)
+   :summary    (:summary proposal)
+   :rationale  (:rationale proposal)
+   :cites      (:cites proposal)
+   :source     (:source proposal)
+   :confidence (:confidence proposal)})

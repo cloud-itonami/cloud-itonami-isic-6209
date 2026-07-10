@@ -1,0 +1,56 @@
+(ns itsupport.phase-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [langgraph.graph :as g]
+            [itsupport.store :as store]
+            [itsupport.operation :as op]))
+
+(def dispatcher {:actor-id "dp-1" :actor-role :dispatcher})
+(def manager    {:actor-id "mg-1" :actor-role :support-manager})
+
+(def clean-route
+  {:op :ticket/route :subject "tk-100" :ticket-id "tk-100" :technician-id "tech-100"
+   :hours 1.0 :source {:class :client-submitted-ticket :ref "demo"}})
+
+(def clean-disclosure
+  {:op :disclosure/query :subject "tk-100" :ticket-id "tk-100"})
+
+(def dispute-req
+  {:op :dispute/request :subject "tk-100" :disputed-field :hours :claim 2.0})
+
+(defn- run [phase req ctx]
+  (let [s (store/seed-db)
+        actor (op/build s)]
+    [s (g/run* actor {:request req :context (assoc ctx :phase phase)}
+               {:thread-id (str "ph-" phase "-" (:op req))})]))
+
+(deftest phase0-holds-all-writes
+  (let [[s res] (run 0 clean-route dispatcher)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (= :phase-disabled (-> (store/ledger s) first :phase-reason)))))
+
+(deftest phase0-allows-governed-reads
+  (let [[_ res] (run 0 clean-disclosure {:actor-id "sub-1" :actor-role :subscriber :tenant "tenant-basic"})]
+    (is (= :commit (get-in res [:state :disposition])))))
+
+(deftest phase1-forces-approval-on-clean-route
+  (let [[_ res] (run 1 clean-route dispatcher)]
+    (is (= :interrupted (:status res)))
+    (is (= :phase-approval (-> res :state :audit last :reason)))))
+
+(deftest phase3-auto-commits-clean-route
+  (let [[s res] (run 3 clean-route dispatcher)]
+    (is (= :commit (get-in res [:state :disposition])))
+    (is (= "tech-100" (:technician-id (store/assignment s "tk-100"))))))
+
+(deftest governor-hold-beats-phase
+  (testing "a hard governor violation (under-cleared technician) holds even in the most permissive phase"
+    (let [[_ res] (run 3 {:op :ticket/route :subject "tk-200" :ticket-id "tk-200" :technician-id "tech-100"
+                          :hours 1.0 :source {:class :client-submitted-ticket :ref "demo"}}
+                       dispatcher)]
+      (is (= :hold (get-in res [:state :disposition]))))))
+
+(deftest dispute-request-never-auto-commits-at-any-phase
+  (doseq [ph [0 1 2 3]]
+    (let [[_ res] (run ph dispute-req manager)]
+      (is (not= :commit (get-in res [:state :disposition]))
+          (str "phase " ph " must not auto-commit a dispute")))))
