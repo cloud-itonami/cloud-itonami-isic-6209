@@ -1,0 +1,64 @@
+<html><head><meta charset="utf-8"><title>cloud-itonami-isic-6209 &middot; itsupport.render-html &middot; IT managed-services ticket routing</title><style>
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.ok { color: #137a3f; }
+body { font-family: system-ui,-apple-system,sans-serif; margin: 0; color: #1a1a1a; background: #fafafa; }
+header.bar { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: #fff; border-bottom: 1px solid #e5e5e5; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
+h2 { margin-top: 0; font-size: 15px; }
+.warn { color: #b25c00; background: #fff8e1; padding: 2px 6px; border-radius: 4px; }
+main { max-width: 980px; margin: 24px auto; padding: 0 20px; }
+header.bar h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.muted { color: #888; font-size: 13px; }
+.critical { color: #fff; background: #b3261e; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+.card { background: #fff; border: 1px solid #e5e5e5; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.err { color: #b3261e; background: #fbe9e7; padding: 2px 6px; border-radius: 4px; }
+th { font-weight: 600; color: #555; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+header.bar .badge { margin-left: auto; font-size: 12px; color: #666; }
+code { font-size: 12px; background: #f4f4f4; padding: 1px 4px; border-radius: 3px; }
+</style></head><body>
+<header class="bar">
+  <h1>IT managed-services / helpdesk ticket routing (ISIC 6209) — Operator Console</h1>
+  <span class="badge">read-only sample · governor-gated · SLA-urgent/dispute always human-approved</span>
+</header>
+<main>
+  <section class="card">
+    <h2>Tickets</h2>
+    <p class="muted">Demo snapshot — build-time-generated from <code>itsupport.store</code> via <code>itsupport.render-html</code> (<code>clojure -M:dev:render-html</code>), regenerated nightly.</p>
+    <table>
+      <thead><tr><th>Ticket</th><th>Client</th><th>Category</th><th>Required tier</th><th>SLA remaining (min)</th><th>Last op status</th></tr></thead>
+      <tbody>
+        <tr><td>tk-100</td><td>tenant-acme</td><td>general</td><td>standard</td><td>240</td><td><span class="ok">committed</span></td></tr>
+        <tr><td>tk-200</td><td>tenant-acme</td><td>elevated-access</td><td>elevated</td><td>120</td><td><span class="critical">HARD hold &middot; access-tier-clearance-gate</span></td></tr>
+        <tr><td>tk-300</td><td>tenant-acme</td><td>security-incident</td><td>elevated</td><td>30</td><td><span class="ok">committed</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section class="card">
+    <h2>Action gate (TicketGovernor)</h2>
+    <p class="muted">HARD holds cannot be overridden by a human approver. Security-incident tickets require a real, named incident-response certification; SLA-urgent routing and any dispute always reach a human.</p>
+    <table>
+      <thead><tr><th>Op</th><th>Gate</th></tr></thead>
+      <tbody>
+        <tr><td><code>:ticket/route</code></td><td><span class="ok">auto-commit in phase 3 when governor-clean (RBAC &middot; access-tier &middot; security-incident cert &middot; source provenance all pass)</span> &middot; <span class="warn">SLA-breach-imminent (&lt;60min remaining) ALWAYS escalates regardless of confidence</span></td></tr>
+        <tr><td><code>:disclosure/query</code></td><td><span class="err">HARD hold if contract inactive/unknown tenant, or requested columns exceed the contract's tier</span></td></tr>
+        <tr><td><code>:dispute/request</code></td><td><span class="warn">ALWAYS human approval &middot; never auto-applies, any phase</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section class="card">
+    <h2>Audit ledger (this run)</h2>
+    <p class="muted">Append-only decision-fact log — every hold and commit this scenario produced.</p>
+    <table>
+      <thead><tr><th>Fact</th><th>Op</th><th>Actor</th><th>Subject</th><th>Basis</th></tr></thead>
+      <tbody>
+        <tr><td>committed</td><td><code>route</code></td><td>dp-1</td><td>tk-100</td><td>ticket-id, technician-id, hours</td></tr>
+        <tr><td>policy-hold</td><td><code>route</code></td><td>dp-1</td><td>tk-100</td><td>source-provenance-gate</td></tr>
+        <tr><td>policy-hold</td><td><code>route</code></td><td>dp-1</td><td>tk-200</td><td>access-tier-clearance-gate</td></tr>
+        <tr><td>policy-hold</td><td><code>route</code></td><td>dp-1</td><td>tk-300</td><td>security-incident-misrouting-gate</td></tr>
+        <tr><td>committed</td><td><code>route</code></td><td>dp-1</td><td>tk-300</td><td>ticket-id, technician-id, hours</td></tr>
+        <tr><td>committed</td><td><code>request</code></td><td>mg-1</td><td>tk-100</td><td>hours</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+</body></html>
