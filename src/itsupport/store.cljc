@@ -22,10 +22,9 @@
   isic-7820`'s dispatch model).
 
   The ledger stays append-only on every backend."
-  (:require #?(:clj  [clojure.edn :as edn]
-               :cljs [cljs.reader :as edn])
-            [clojure.string :as str]
-            [langchain.db :as d]))
+  (:require [clojure.string :as str]
+            [langchain.db :as d]
+            [langchain-store.core :as ls]))
 
 (defprotocol Store
   (technician [s id])
@@ -97,70 +96,55 @@
 
 ;; ───────────────────────── DatomicStore (langchain.db) ─────────────────
 
+;; Schema, the EDN-blob codec (enc/dec*), and the per-entity field-spec
+;; map<->tx<->pull machinery are the shared kotoba-lang/langchain-store
+;; substrate (ADR-2607141600) — the seam ~190 actors hand-roll. This store
+;; keeps only the domain-specific field specs (technician/ticket/
+;; assignment/contract) and the ledger's seq-keyed event-log wiring.
 (def ^:private schema
-  {:technician/id   {:db/unique :db.unique/identity}
-   :ticket/id       {:db/unique :db.unique/identity}
-   :assignment/ticket-id {:db/unique :db.unique/identity}
-   :contract/tenant {:db/unique :db.unique/identity}
-   :ledger/seq      {:db/unique :db.unique/identity}})
+  (ls/identity-schema [:technician/id :ticket/id :assignment/ticket-id
+                       :contract/tenant :ledger/seq]))
 
-(defn- enc [v] (pr-str v))
-(defn- dec* [s] (when s (edn/read-string s)))
+(def ^:private technician-spec
+  {:id {:attr :technician/id}
+   :name {:attr :technician/name}
+   :access-tier {:attr :technician/access-tier}
+   :certifications {:attr :technician/certifications :blob? true :default #{}}})
 
-(defn- technician->tx [{:keys [id name access-tier certifications]}]
-  (cond-> {:technician/id id}
-    name            (assoc :technician/name name)
-    access-tier     (assoc :technician/access-tier access-tier)
-    true            (assoc :technician/certifications (enc (or certifications #{})))))
+(defn- technician->tx [m] (ls/map->tx technician-spec m))
+(def ^:private technician-pull (ls/pull-pattern technician-spec))
+(defn- pull->technician [m] (ls/pull->map technician-spec :id m))
 
-(defn- pull->technician [m]
-  (when (:technician/id m)
-    {:id (:technician/id m) :name (:technician/name m)
-     :access-tier (:technician/access-tier m)
-     :certifications (or (dec* (:technician/certifications m)) #{})}))
+(def ^:private ticket-spec
+  {:id {:attr :ticket/id}
+   :client {:attr :ticket/client}
+   :category {:attr :ticket/category}
+   :required-access-tier {:attr :ticket/required-access-tier}
+   :sla-remaining-minutes {:attr :ticket/sla-remaining-minutes}})
 
-(def ^:private technician-pull
-  [:technician/id :technician/name :technician/access-tier :technician/certifications])
+(defn- ticket->tx [m] (ls/map->tx ticket-spec m))
+(def ^:private ticket-pull (ls/pull-pattern ticket-spec))
+(defn- pull->ticket [m] (ls/pull->map ticket-spec :id m))
 
-(defn- ticket->tx [{:keys [id client category required-access-tier sla-remaining-minutes]}]
-  (cond-> {:ticket/id id}
-    client                  (assoc :ticket/client client)
-    category                (assoc :ticket/category category)
-    required-access-tier    (assoc :ticket/required-access-tier required-access-tier)
-    sla-remaining-minutes   (assoc :ticket/sla-remaining-minutes sla-remaining-minutes)))
+(def ^:private assignment-spec
+  {:ticket-id {:attr :assignment/ticket-id}
+   :technician-id {:attr :assignment/technician-id}
+   :hours {:attr :assignment/hours}
+   :source {:attr :assignment/source :blob? true}})
 
-(defn- pull->ticket [m]
-  (when (:ticket/id m)
-    {:id (:ticket/id m) :client (:ticket/client m) :category (:ticket/category m)
-     :required-access-tier (:ticket/required-access-tier m)
-     :sla-remaining-minutes (:ticket/sla-remaining-minutes m)}))
+(defn- assignment->tx [m] (ls/map->tx assignment-spec m))
+(def ^:private assignment-pull (ls/pull-pattern assignment-spec))
+(defn- pull->assignment [m] (ls/pull->map assignment-spec :ticket-id m))
 
-(def ^:private ticket-pull
-  [:ticket/id :ticket/client :ticket/category :ticket/required-access-tier
-   :ticket/sla-remaining-minutes])
+(def ^:private contract-spec
+  {:tenant {:attr :contract/tenant}
+   :tier {:attr :contract/tier}
+   :active? {:attr :contract/active :coerce boolean}
+   :purpose {:attr :contract/purpose}})
 
-(defn- assignment->tx [{:keys [ticket-id technician-id hours source]}]
-  {:assignment/ticket-id ticket-id :assignment/technician-id technician-id
-   :assignment/hours hours :assignment/source (enc source)})
-
-(defn- pull->assignment [m]
-  (when (:assignment/ticket-id m)
-    {:ticket-id (:assignment/ticket-id m) :technician-id (:assignment/technician-id m)
-     :hours (:assignment/hours m) :source (dec* (:assignment/source m))}))
-
-(def ^:private assignment-pull
-  [:assignment/ticket-id :assignment/technician-id :assignment/hours :assignment/source])
-
-(defn- contract->tx [{:keys [tenant tier active? purpose]}]
-  {:contract/tenant tenant :contract/tier tier :contract/active active? :contract/purpose purpose})
-
-(defn- pull->contract [m]
-  (when (:contract/tenant m)
-    {:tenant (:contract/tenant m) :tier (:contract/tier m)
-     :active? (:contract/active m) :purpose (:contract/purpose m)}))
-
-(def ^:private contract-pull
-  [:contract/tenant :contract/tier :contract/active :contract/purpose])
+(defn- contract->tx [m] (ls/map->tx contract-spec m))
+(def ^:private contract-pull (ls/pull-pattern contract-spec))
+(defn- pull->contract [m] (ls/pull->map contract-spec :tenant m))
 
 (defrecord DatomicStore [conn]
   Store
@@ -177,10 +161,7 @@
   (assignment [_ ticket-id]
     (pull->assignment (d/pull (d/db conn) assignment-pull [:assignment/ticket-id ticket-id])))
   (contract [_ tenant] (pull->contract (d/pull (d/db conn) contract-pull [:contract/tenant tenant])))
-  (ledger [_]
-    (->> (d/q '[:find ?s ?f :where [?e :ledger/seq ?s] [?e :ledger/fact ?f]] (d/db conn))
-         (sort-by first)
-         (mapv (comp dec* second))))
+  (ledger [_] (ls/read-stream conn :ledger/seq :ledger/fact))
   (commit-record! [s {:keys [effect path value]}]
     (case effect
       :assignment-upsert (d/transact! conn [(assignment->tx value)])
@@ -189,7 +170,7 @@
       nil)
     s)
   (append-ledger! [s fact]
-    (d/transact! conn [{:ledger/seq (count (ledger s)) :ledger/fact (enc fact)}])
+    (ls/append-blob! conn :ledger/seq :ledger/fact (count (ledger s)) fact)
     fact)
   (with-technicians [s ts]
     (when (seq ts) (d/transact! conn (mapv technician->tx (vals ts)))) s)
