@@ -1,0 +1,36 @@
+{:itonami.blueprint/id "cloud-itonami-isic-6209"
+ :itonami.blueprint/name "Governed IT Managed-Services Ticket-Routing Actor"
+ :itonami.blueprint/isic-rev5 "6209"
+ :itonami.blueprint/domain :technology/it-managed-services
+ :itonami.blueprint/license "AGPL-3.0-or-later"
+ :itonami.blueprint/social-impact [:least-privilege-access-control :security-incident-integrity]
+ :itonami.blueprint/governor :ticket-governor
+ :itonami.blueprint/robotics false
+ :itonami.blueprint/required-technologies [:identity :forms :audit-ledger]
+ :itonami.blueprint/optional-technologies [:dmn :bpmn]
+ :itonami.blueprint/status :public-oss
+ :itonami.blueprint/maturity :implemented
+ :itonami.blueprint/implemented-slice
+ "TicketRouter-LLM sealed into a single :advise node, always routed through
+ an independent TicketGovernor (src/itsupport/policy.cljc) and a 0->3
+ rollout-phase gate, via a langgraph-clj StateGraph (src/itsupport/
+ operation.cljc) with an append-only audit ledger and a MemStore +
+ DatomicStore (langchain.db) SSoT proven to satisfy the same store
+ contract test. Governed operations: :ticket/route, :disclosure/query,
+ :dispute/request. Eight governor checks -- five HARD (rbac,
+ access-tier-clearance-gate, security-incident-misrouting-gate,
+ source-provenance-gate, licensed-disclosure) and three SOFT/
+ always-escalate (confidence floor, sla-breach-imminent gate, dispute
+ requests). access-tier-clearance-gate and security-incident-misrouting-
+ gate are domain-unique: the former is a NIST SP 800-53 AC-6
+ least-privilege-style three-tier clearance check (standard/elevated/
+ privileged) requiring a technician's access-tier to meet or exceed a
+ ticket's required tier; the latter requires a :security-incident-
+ category ticket to route only to a technician holding at least one of
+ three real named incident-response certifications (GIAC GCIH, CISSP,
+ CHFI) from a closed R0 catalog. A ticket within 60 minutes of SLA breach
+ always escalates to a human regardless of confidence, and a dispute
+ request never auto-resolves at any phase. This actor routes tickets to
+ already-contracted technicians only -- the store holds no field for
+ payroll, timesheet approval, or employer-of-record status, and it never
+ bypasses the TicketGovernor for production routing or disclosures."}
