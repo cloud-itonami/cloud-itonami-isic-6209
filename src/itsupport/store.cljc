@@ -22,7 +22,7 @@
   isic-7820`'s dispatch model).
 
   The ledger stays append-only on every backend."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [langchain.db :as d]
             [langchain-store.core :as ls]))
 
