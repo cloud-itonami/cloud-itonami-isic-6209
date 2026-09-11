@@ -34,7 +34,7 @@ extends employer-of-record labor responsibility (distinct from
 [`cloud-itonami-isic-7820`](https://github.com/cloud-itonami/cloud-itonami-isic-7820)'s
 dispatch model), never processes payroll, never approves timesheets.
 Security-incident tickets require a real, named certification from a
-closed R0 catalog (`src/itsupport/facts.cljc`: GIAC GCIH, CISSP, CHFI) —
+closed R0 catalog (`src/itsupport/facts.cljk`: GIAC GCIH, CISSP, CHFI) —
 never a bare "the LLM decided this technician is qualified".
 
 ## The core contract

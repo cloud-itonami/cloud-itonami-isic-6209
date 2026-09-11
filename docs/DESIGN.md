@@ -15,7 +15,7 @@ access-tier・security-incident 認定・SLA 緊急度を検閲する構図。
 | security-incident チケットを無認定 technician へ | インシデント対応失敗 |
 | SLA 逼迫チケットを高確信のまま自動処理 | エスカレーション漏れ |
 
-## 2. OperationActor(`src/itsupport/operation.cljc`)
+## 2. OperationActor(`src/itsupport/operation.cljk`)
 
 ```
 intake → advise → govern → decide ─┬─ commit
@@ -23,7 +23,7 @@ intake → advise → govern → decide ─┬─ commit
                                    └─ hold
 ```
 
-## 3. TicketGovernor(`src/itsupport/policy.cljc`)
+## 3. TicketGovernor(`src/itsupport/policy.cljk`)
 
 優先順位(HARD は人間承認でも上書き不可):
 
@@ -36,17 +36,17 @@ intake → advise → govern → decide ─┬─ commit
 7. **sla-breach-imminent gate**(SOFT) — SLA まで60分未満は常に人間承認
 8. dispute-request(SOFT、無条件)
 
-## 4. SSoT(`src/itsupport/store.cljc`)
+## 4. SSoT(`src/itsupport/store.cljk`)
 
 technicians(access-tier/certifications)・tickets(category/required-
 access-tier/sla-remaining-minutes)・assignments・contracts・append-only
 ledger。
 
-## 5. R0(`src/itsupport/facts.cljc`)
+## 5. R0(`src/itsupport/facts.cljk`)
 
 出典クラス3種 + 実在認定3種(GIAC GCIH/CISSP/CHFI)+ 3段階 access-tier。
 
-## 6. Phase 0→3(`src/itsupport/phase.cljc`)
+## 6. Phase 0→3(`src/itsupport/phase.cljk`)
 
 `default-phase` = 1(保守的)。`dispute/request` はどの phase の `:auto`
 にも入らない。
