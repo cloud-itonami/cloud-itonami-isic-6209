@@ -60,9 +60,9 @@ resolves a dispute the TicketGovernor would reject.
 ## Run
 
 ```bash
-clojure -M:dev:test   # governor contract · store parity · phases · facts
-clojure -M:dev:run    # 8-operation demo through one OperationActor
-clojure -M:lint
+kbb -M:dev:test   # governor contract · store parity · phases · facts
+kbb -M:dev:run    # 8-operation demo through one OperationActor
+kbb -M:lint
 ```
 
 ## Non-Negotiables

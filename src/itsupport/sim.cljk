@@ -12,7 +12,7 @@
     op6  SLA 逼迫チケットの適格ルーティング(出典・tier・認定は正常でも人間承認) → escalate → approve → commit
     op7  assignment への異議申立て(どの phase でも常に人間レビュー)      → escalate → approve → commit
 
-  Run: clojure -M:dev:run"
+  Run: kbb -M:dev:run"
   (:require [langgraph.graph :as g]
             [itsupport.store :as store]
             [itsupport.operation :as op]
