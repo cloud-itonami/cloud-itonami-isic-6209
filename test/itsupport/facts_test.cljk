@@ -1,5 +1,5 @@
 (ns itsupport.facts-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [kotoba.test :refer [deftest is]]
             [itsupport.facts :as facts]))
 
 (deftest class-allowed?-rejects-unlisted-classes

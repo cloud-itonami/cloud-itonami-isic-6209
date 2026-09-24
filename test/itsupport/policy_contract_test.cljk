@@ -2,7 +2,7 @@
   "The governor contract as executable tests. Single invariant under test:
   TicketRouter-LLM never routes/discloses/resolves a record the
   TicketGovernor would reject."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [langgraph.graph :as g]
             [itsupport.store :as store]
             [itsupport.operation :as op]))
